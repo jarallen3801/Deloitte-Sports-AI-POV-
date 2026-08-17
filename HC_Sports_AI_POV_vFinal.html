@@ -2510,6 +2510,21 @@ nav {
   <div style="font-size:11px;color:#aaa;letter-spacing:0.12em;text-transform:uppercase;margin-top:2px;">Confidential &nbsp;·&nbsp; NDA Protected</div>
 </div>
 <script>
+  // Runs before paint so a remembered visitor never sees the gate flash.
+  // The main script picks up window.__ddAuth and finishes the reveal.
+  (function() {
+    var TEN_DAYS = 10 * 24 * 60 * 60 * 1000;
+    try {
+      var saved = JSON.parse(localStorage.getItem('sports-ai-pov-auth') || 'null');
+      if (saved && saved.ts && (Date.now() - saved.ts) < TEN_DAYS) {
+        window.__ddAuth = saved;
+        document.getElementById('password-gate').style.display = 'none';
+      } else if (saved) {
+        localStorage.removeItem('sports-ai-pov-auth');
+      }
+    } catch (e) {}
+  })();
+
   ['pw-email','pw-input'].forEach(function(id) {
     document.getElementById(id).addEventListener('keydown', function(e) {
       if (e.key === 'Enter') window.checkPassword && window.checkPassword();
@@ -3869,32 +3884,10 @@ nav {
     setActiveNav(activeLink);
   }
   setActiveNav('#market');
-  function checkPassword() {
-    var email = document.getElementById('pw-email').value.trim();
-    var pass  = document.getElementById('pw-input').value;
-    var errEl = document.getElementById('pw-error');
-    if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-      errEl.textContent = 'Please enter a valid email address.';
-      document.getElementById('pw-email').focus();
-      return;
-    }
-    if (pass !== 'Deloitte2026') {
-      errEl.textContent = 'Incorrect password. Please try again.';
-      document.getElementById('pw-input').value = '';
-      document.getElementById('pw-input').focus();
-      return;
-    }
-    // Fire-and-forget POST — never blocks the gate removal
-    fetch('/api/access', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email: email })
-    }).catch(function(){});
-    // Unlock immediately
+  // Shared unlock path — used by a fresh sign-in and by a remembered session.
+  function revealSite(animate) {
     var gate = document.getElementById('password-gate');
-    gate.style.transition = 'opacity 0.45s ease';
-    gate.style.opacity = '0';
-    setTimeout(function() {
+    function show() {
       gate.style.display = 'none';
       document.getElementById('main-content').style.display = 'block';
       triggerHeroEntrance();
@@ -3910,11 +3903,69 @@ nav {
         }, { passive: true });
         window.addEventListener('resize', buildCache);
       }));
-    }, 450);
+    }
+    if (!animate) return show();
+    gate.style.transition = 'opacity 0.45s ease';
+    gate.style.opacity = '0';
+    setTimeout(show, 450);
   }
-  document.getElementById('pw-input').addEventListener('keydown', e => {
-    if (e.key === 'Enter') checkPassword();
-  });
+
+  function checkPassword() {
+    var email = document.getElementById('pw-email').value.trim();
+    var pass  = document.getElementById('pw-input').value;
+    var errEl = document.getElementById('pw-error');
+    if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      errEl.textContent = 'Please enter a valid email address.';
+      document.getElementById('pw-email').focus();
+      return;
+    }
+    if (!pass) {
+      errEl.textContent = 'Please enter the access password.';
+      document.getElementById('pw-input').focus();
+      return;
+    }
+    errEl.textContent = 'Checking…';
+    // The password is not in this file. The server is the only judge of it,
+    // so the unlock has to wait for the answer rather than run optimistically.
+    fetch('/api/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: email, password: pass })
+    }).then(function(r) {
+      if (!r.ok) {
+        errEl.textContent = r.status === 401
+          ? 'Incorrect password. Please try again.'
+          : 'Access is temporarily unavailable. Please try again shortly.';
+        document.getElementById('pw-input').value = '';
+        document.getElementById('pw-input').focus();
+        return;
+      }
+      errEl.textContent = '';
+      try {
+        localStorage.setItem('sports-ai-pov-auth', JSON.stringify({ ts: Date.now(), email: email }));
+      } catch (e) {}
+      revealSite(true);
+    }).catch(function() {
+      errEl.textContent = 'Network error. Please check your connection and try again.';
+    });
+  }
+
+  if (window.__ddAuth) {
+    // Return visit inside the 10-day window — log it, skip the gate.
+    fetch('/api/view', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: window.__ddAuth.email })
+    }).catch(function(){});
+    revealSite(false);
+  } else {
+    // Running locally with no GATE_PASSWORD set — open straight through.
+    fetch('/api/gate-status')
+      .then(function(r) { return r.json(); })
+      .then(function(s) { if (!s.gateEnabled) revealSite(false); })
+      .catch(function(){});
+  }
+
   window.checkPassword = checkPassword;
   const tabs = document.querySelectorAll('.dd-tab');
   const panels = document.querySelectorAll('.dd-panel');
